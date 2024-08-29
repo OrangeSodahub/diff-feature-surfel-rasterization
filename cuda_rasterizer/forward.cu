@@ -145,7 +145,7 @@ __device__ bool compute_aabb(
 }
 
 // Perform initial steps for each Gaussian prior to rasterization.
-template<int C>
+template<int C, int F>
 __global__ void preprocessCUDA(int P, int D, int M,
 	const float* orig_points,
 	const glm::vec2* scales,
@@ -153,6 +153,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	const glm::vec4* rotations,
 	const float* opacities,
 	const float* shs,
+	const float* features,
 	bool* clamped,
 	const float* transMat_precomp,
 	const float* colors_precomp,
@@ -253,7 +254,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 // Main rasterization method. Collaboratively works on one tile per
 // block, each thread treats one pixel. Alternates between fetching 
 // and rasterizing data.
-template <uint32_t CHANNELS>
+template <uint32_t CHANNELS, uint32_t FEATS>
 __global__ void __launch_bounds__(BLOCK_X * BLOCK_Y)
 renderCUDA(
 	const uint2* __restrict__ ranges,
@@ -262,6 +263,7 @@ renderCUDA(
 	float focal_x, float focal_y,
 	const float2* __restrict__ points_xy_image,
 	const float* __restrict__ features,
+	const float* __restrict__ extra_features,
 	const float* __restrict__ transMats,
 	const float* __restrict__ depths,
 	const float4* __restrict__ normal_opacity,
@@ -269,6 +271,7 @@ renderCUDA(
 	uint32_t* __restrict__ n_contrib,
 	const float* __restrict__ bg_color,
 	float* __restrict__ out_color,
+	float* __restrict__ out_features,
 	float* __restrict__ out_others)
 {
 	// Identify current tile and associated min/max pixel range.
@@ -303,6 +306,7 @@ renderCUDA(
 	uint32_t contributor = 0;
 	uint32_t last_contributor = 0;
 	float C[CHANNELS] = { 0 };
+	float F[FEATS] = { 0 };  // rendered extra features
 
 
 #if RENDER_AXUTILITY
@@ -409,6 +413,9 @@ renderCUDA(
 			// Eq. (3) from 3D Gaussian splatting paper.
 			for (int ch = 0; ch < CHANNELS; ch++)
 				C[ch] += features[collected_id[j] * CHANNELS + ch] * w;
+			for (int ch = 0; ch < FEATS; ch++)
+				F[ch] += extra_features[collected_id[j] * FEATS + ch] * alpha * T;
+
 			T = test_T;
 
 			// Keep track of last range entry to update this
@@ -425,6 +432,8 @@ renderCUDA(
 		n_contrib[pix_id] = last_contributor;
 		for (int ch = 0; ch < CHANNELS; ch++)
 			out_color[ch * H * W + pix_id] = C[ch] + T * bg_color[ch];
+		for (int ch = 0; ch < FEATS; ch++)
+			out_features[ch * H * W + pix_id] = F[ch];
 
 #if RENDER_AXUTILITY
 		n_contrib[pix_id + H * W] = median_contributor;
@@ -448,6 +457,7 @@ void FORWARD::render(
 	float focal_x, float focal_y,
 	const float2* means2D,
 	const float* colors,
+	const float* features,
 	const float* transMats,
 	const float* depths,
 	const float4* normal_opacity,
@@ -455,15 +465,17 @@ void FORWARD::render(
 	uint32_t* n_contrib,
 	const float* bg_color,
 	float* out_color,
+	float* out_features,
 	float* out_others)
 {
-	renderCUDA<NUM_CHANNELS> << <grid, block >> > (
+	renderCUDA<NUM_CHANNELS, FEAT_CHANNELS> << <grid, block >> > (
 		ranges,
 		point_list,
 		W, H,
 		focal_x, focal_y,
 		means2D,
 		colors,
+		features,
 		transMats,
 		depths,
 		normal_opacity,
@@ -471,6 +483,7 @@ void FORWARD::render(
 		n_contrib,
 		bg_color,
 		out_color,
+		out_features,
 		out_others);
 }
 
@@ -481,6 +494,7 @@ void FORWARD::preprocess(int P, int D, int M,
 	const glm::vec4* rotations,
 	const float* opacities,
 	const float* shs,
+	const float* features,
 	bool* clamped,
 	const float* transMat_precomp,
 	const float* colors_precomp,
@@ -500,7 +514,7 @@ void FORWARD::preprocess(int P, int D, int M,
 	uint32_t* tiles_touched,
 	bool prefiltered)
 {
-	preprocessCUDA<NUM_CHANNELS> << <(P + 255) / 256, 256 >> > (
+	preprocessCUDA<NUM_CHANNELS, FEAT_CHANNELS> << <(P + 255) / 256, 256 >> > (
 		P, D, M,
 		means3D,
 		scales,
@@ -508,6 +522,7 @@ void FORWARD::preprocess(int P, int D, int M,
 		rotations,
 		opacities,
 		shs,
+		features,
 		clamped,
 		transMat_precomp,
 		colors_precomp,

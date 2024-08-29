@@ -140,7 +140,7 @@ __device__ void computeColorFromSH(int idx, int deg, int max_coeffs, const glm::
 
 
 // Backward version of the rendering procedure.
-template <uint32_t C>
+template <uint32_t C, uint32_t F>
 __global__ void __launch_bounds__(BLOCK_X * BLOCK_Y)
 renderCUDA(
 	const uint2* __restrict__ ranges,
@@ -152,16 +152,19 @@ renderCUDA(
 	const float4* __restrict__ normal_opacity,
 	const float* __restrict__ transMats,
 	const float* __restrict__ colors,
+	const float* __restrict__ features,
 	const float* __restrict__ depths,
 	const float* __restrict__ final_Ts,
 	const uint32_t* __restrict__ n_contrib,
 	const float* __restrict__ dL_dpixels,
+	const float* __restrict__ dL_dpixels_feats,
 	const float* __restrict__ dL_depths,
 	float * __restrict__ dL_dtransMat,
 	float3* __restrict__ dL_dmean2D,
 	float* __restrict__ dL_dnormal3D,
 	float* __restrict__ dL_dopacity,
-	float* __restrict__ dL_dcolors)
+	float* __restrict__ dL_dcolors,
+	float* __restrict__ dL_dfeatures)
 {
 	// We rasterize again. Compute necessary block info.
 	auto block = cg::this_thread_block();
@@ -184,6 +187,7 @@ renderCUDA(
 	__shared__ float2 collected_xy[BLOCK_SIZE];
 	__shared__ float4 collected_normal_opacity[BLOCK_SIZE];
 	__shared__ float collected_colors[C * BLOCK_SIZE];
+	__shared__ float collected_features[F * BLOCK_SIZE];
 	__shared__ float3 collected_Tu[BLOCK_SIZE];
 	__shared__ float3 collected_Tv[BLOCK_SIZE];
 	__shared__ float3 collected_Tw[BLOCK_SIZE];
@@ -200,7 +204,9 @@ renderCUDA(
 	const int last_contributor = inside ? n_contrib[pix_id] : 0;
 
 	float accum_rec[C] = { 0 };
+	float accum_rec_feat[F] = { 0 };
 	float dL_dpixel[C];
+	float dL_dpixel_feat[F];
 
 #if RENDER_AXUTILITY
 	float dL_dreg;
@@ -238,10 +244,13 @@ renderCUDA(
 	if (inside){
 		for (int i = 0; i < C; i++)
 			dL_dpixel[i] = dL_dpixels[i * H * W + pix_id];
+		for (int i = 0; i < F; i++)
+			dL_dpixel_feat[i] = dL_dpixels_feats[i * H * W + pix_id];
 	}
 
 	float last_alpha = 0;
 	float last_color[C] = { 0 };
+	float last_feature[F] = { 0 };
 
 	// Gradient of pixel coordinate w.r.t. normalized 
 	// screen-space viewport corrdinates (-1 to 1)
@@ -267,6 +276,8 @@ renderCUDA(
 			for (int i = 0; i < C; i++)
 				collected_colors[i * BLOCK_SIZE + block.thread_rank()] = colors[coll_id * C + i];
 				// collected_depths[block.thread_rank()] = depths[coll_id];
+			for (int i = 0; i < F; i++)
+				collected_features[i * BLOCK_SIZE + block.thread_rank()] = features[coll_id * F + i];
 		}
 		block.sync();
 
@@ -374,6 +385,18 @@ renderCUDA(
 				atomicAdd((&dL_dnormal3D[global_id * 3 + ch]), alpha * T * dL_dnormal2D[ch]);
 			}
 #endif
+
+			for (int ch = 0; ch < 0; ch++)
+			{
+				const float f = collected_features[ch * BLOCK_SIZE + j];
+				accum_rec_feat[ch] = last_alpha * last_feature[ch] + (1.f - last_alpha) * accum_rec_feat[ch];
+				last_feature[ch] = f;
+
+				const float dL_dchannel_feat = dL_dpixel_feat[ch];
+				dL_dalpha += (f - accum_rec_feat[ch]) * dL_dchannel_feat;
+
+				atomicAdd(&(dL_dfeatures[global_id * F + ch]), dchannel_dcolor * dL_dchannel_feat); // TODO: why here color???
+			}
 
 			dL_dalpha *= T;
 			// Update last alpha (to be used in the next iteration)
@@ -692,19 +715,22 @@ void BACKWARD::render(
 	const float2* means2D,
 	const float4* normal_opacity,
 	const float* colors,
+	const float* features,
 	const float* transMats,
 	const float* depths,
 	const float* final_Ts,
 	const uint32_t* n_contrib,
 	const float* dL_dpixels,
+	const float* dL_dpixels_feats,
 	const float* dL_depths,
 	float * dL_dtransMat,
 	float3* dL_dmean2D,
 	float* dL_dnormal3D,
 	float* dL_dopacity,
-	float* dL_dcolors)
+	float* dL_dcolors,
+	float* dL_dfeatures)
 {
-	renderCUDA<NUM_CHANNELS> << <grid, block >> >(
+	renderCUDA<NUM_CHANNELS, FEAT_CHANNELS> << <grid, block >> >(
 		ranges,
 		point_list,
 		W, H,
@@ -714,15 +740,18 @@ void BACKWARD::render(
 		normal_opacity,
 		transMats,
 		colors,
+		features,
 		depths,
 		final_Ts,
 		n_contrib,
 		dL_dpixels,
+		dL_dpixels_feats,
 		dL_depths,
 		dL_dtransMat,
 		dL_dmean2D,
 		dL_dnormal3D,
 		dL_dopacity,
-		dL_dcolors
+		dL_dcolors,
+		dL_dfeatures
 		);
 }
