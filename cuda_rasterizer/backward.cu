@@ -386,7 +386,7 @@ renderCUDA(
 			}
 #endif
 
-			for (int ch = 0; ch < 0; ch++)
+			for (int ch = 0; ch < F; ch++)
 			{
 				const float f = collected_features[ch * BLOCK_SIZE + j];
 				accum_rec_feat[ch] = last_alpha * last_feature[ch] + (1.f - last_alpha) * accum_rec_feat[ch];

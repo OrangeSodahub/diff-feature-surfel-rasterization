@@ -170,6 +170,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
   CHECK_INPUT(radii);
   CHECK_INPUT(colors);
   CHECK_INPUT(scales);
+  CHECK_INPUT(features);
   CHECK_INPUT(rotations);
   CHECK_INPUT(transMat_precomp);
   CHECK_INPUT(viewmatrix);

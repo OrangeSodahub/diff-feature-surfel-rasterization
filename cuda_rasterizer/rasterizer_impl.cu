@@ -402,7 +402,7 @@ void CudaRasterizer::Rasterizer::backward(
 	// opacity and RGB of Gaussians from per-pixel loss gradients.
 	// If we were given precomputed colors and not SHs, use them.
 	const float* color_ptr = (colors_precomp != nullptr) ? colors_precomp : geomState.rgb;
-	const float* feat_ptr = features; // Added by Xiuyu Yang (This is different from `feature_ptr`)
+	const float* feat_ptr = (features != nullptr) ? features : geomState.features; // Added by Xiuyu Yang (This is different from `feature_ptr`)
 	const float* depth_ptr = geomState.depths;
 	const float* transMat_ptr = (transMat_precomp != nullptr) ? transMat_precomp : geomState.transMat;
 	CHECK_CUDA(BACKWARD::render(
